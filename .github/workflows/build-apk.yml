@@ -1,0 +1,531 @@
+name: Build Android APK
+
+on:
+  push:
+    branches: [ "main", "master" ]
+  workflow_dispatch:
+
+jobs:
+  build:
+    runs-on: ubuntu-latest
+
+    steps:
+      - name: Checkout Repository
+        uses: actions/checkout@v4
+
+      - name: Generate Android Project Structure
+        run: |
+          mkdir -p app/src/main/java/com/example/shakeautomation
+          mkdir -p app/src/main/res/layout
+
+          cat << 'EOF' > settings.gradle.kts
+          pluginManagement {
+              repositories {
+                  google()
+                  mavenCentral()
+                  gradlePluginPortal()
+              }
+          }
+          dependencyResolutionManagement {
+              repositoriesMode.set(RepositoriesMode.FAIL_ON_PROJECT_REPOS)
+              repositories {
+                  google()
+                  mavenCentral()
+              }
+          }
+          rootProject.name = "ShakeAutomation"
+          include(":app")
+          EOF
+
+          cat << 'EOF' > build.gradle.kts
+          plugins {
+              id("com.android.application") version "8.4.0" apply false
+              id("org.jetbrains.kotlin.android") version "1.9.23" apply false
+          }
+          EOF
+
+          cat << 'EOF' > gradle.properties
+          org.gradle.jvmargs=-Xmx2048m -Dfile.encoding=UTF-8
+          android.useAndroidX=true
+          kotlin.code.style=official
+          android.nonTransitiveRClass=true
+          EOF
+
+          cat << 'EOF' > app/build.gradle.kts
+          plugins {
+              id("com.android.application")
+              id("org.jetbrains.kotlin.android")
+          }
+
+          android {
+              namespace = "com.example.shakeautomation"
+              compileSdk = 34
+
+              defaultConfig {
+                  applicationId = "com.example.shakeautomation"
+                  minSdk = 26
+                  targetSdk = 34
+                  versionCode = 1
+                  versionName = "1.0"
+              }
+
+              buildTypes {
+                  release {
+                      isMinifyEnabled = false
+                  }
+              }
+
+              compileOptions {
+                  sourceCompatibility = JavaVersion.VERSION_17
+                  targetCompatibility = JavaVersion.VERSION_17
+              }
+              kotlinOptions {
+                  jvmTarget = "17"
+              }
+          }
+
+          dependencies {
+              implementation("androidx.core:core-ktx:1.13.1")
+              implementation("androidx.appcompat:appcompat:1.7.0")
+              implementation("com.google.android.material:material:1.12.0")
+          }
+          EOF
+
+          cat << 'EOF' > app/src/main/AndroidManifest.xml
+          <?xml version="1.0" encoding="utf-8"?>
+          <manifest xmlns:android="http://schemas.android.com/apk/res/android">
+
+              <uses-feature android:name="android.hardware.camera.flash" android:required="true" />
+              <uses-feature android:name="android.hardware.sensor.proximity" android:required="false" />
+              <uses-permission android:name="android.permission.VIBRATE" />
+
+              <uses-permission android:name="android.permission.FOREGROUND_SERVICE" />
+              <uses-permission android:name="android.permission.FOREGROUND_SERVICE_SPECIAL_USE" />
+              <uses-permission android:name="android.permission.POST_NOTIFICATIONS" />
+              <uses-permission android:name="android.permission.WAKE_LOCK" />
+              <uses-permission android:name="android.permission.RECEIVE_BOOT_COMPLETED" />
+
+              <application
+                  android:allowBackup="true"
+                  android:icon="@android:drawable/ic_lock_idle_charging"
+                  android:label="Shake Automation"
+                  android:supportsRtl="true"
+                  android:theme="@style/Theme.AppCompat.DayNight.DarkActionBar">
+
+                  <activity
+                      android:name=".MainActivity"
+                      android:exported="true">
+                      <intent-filter>
+                          <action android:name="android.intent.action.MAIN" />
+                          <category android:name="android.intent.category.LAUNCHER" />
+                      </intent-filter>
+                  </activity>
+
+                  <service
+                      android:name=".ShakeAutomationService"
+                      android:enabled="true"
+                      android:exported="false"
+                      android:foregroundServiceType="specialUse">
+                      <property
+                          android:name="android.app.PROPERTY_SPECIAL_USE_FGS_SUBTYPE"
+                          android:value="Continuous hardware sensor monitoring for user-triggered flashlight automation" />
+                  </service>
+
+                  <receiver
+                      android:name=".BootReceiver"
+                      android:enabled="true"
+                      android:exported="true">
+                      <intent-filter>
+                          <action android:name="android.intent.action.BOOT_COMPLETED" />
+                          <action android:name="android.intent.action.QUICKBOOT_POWERON" />
+                      </intent-filter>
+                  </receiver>
+
+              </application>
+
+          </manifest>
+          EOF
+
+          cat << 'EOF' > app/src/main/res/layout/activity_main.xml
+          <?xml version="1.0" encoding="utf-8"?>
+          <LinearLayout xmlns:android="http://schemas.android.com/apk/res/android"
+              android:layout_width="match_parent"
+              android:layout_height="match_parent"
+              android:gravity="center"
+              android:orientation="vertical"
+              android:padding="24dp">
+
+              <TextView
+                  android:id="@+id/tvTitle"
+                  android:layout_width="wrap_content"
+                  android:layout_height="wrap_content"
+                  android:text="Shake-to-Torch Automation"
+                  android:textSize="22sp"
+                  android:textStyle="bold"
+                  android:layout_marginBottom="16dp" />
+
+              <Switch
+                  android:id="@+id/switchAutomation"
+                  android:layout_width="wrap_content"
+                  android:layout_height="wrap_content"
+                  android:checked="true"
+                  android:text="Enable Shake Detection   "
+                  android:textSize="18sp"
+                  android:layout_marginBottom="24dp" />
+
+              <TextView
+                  android:id="@+id/tvStatus"
+                  android:layout_width="wrap_content"
+                  android:layout_height="wrap_content"
+                  android:text="Background Service: RUNNING"
+                  android:textAlignment="center"
+                  android:textSize="16sp" />
+
+          </LinearLayout>
+          EOF
+
+          cat << 'EOF' > app/src/main/java/com/example/shakeautomation/MainActivity.kt
+          package com.example.shakeautomation
+
+          import android.Manifest
+          import android.content.Context
+          import android.content.Intent
+          import android.content.pm.PackageManager
+          import android.os.Build
+          import android.os.Bundle
+          import android.widget.Switch
+          import android.widget.TextView
+          import androidx.appcompat.app.AppCompatActivity
+          import androidx.core.app.ActivityCompat
+          import androidx.core.content.ContextCompat
+
+          class MainActivity : AppCompatActivity() {
+
+              private lateinit var switchAutomation: Switch
+              private lateinit var tvStatus: TextView
+
+              override fun onCreate(savedInstanceState: Bundle?) {
+                  super.onCreate(savedInstanceState)
+                  setContentView(R.layout.activity_main)
+
+                  switchAutomation = findViewById(R.id.switchAutomation)
+                  tvStatus = findViewById(R.id.tvStatus)
+
+                  requestNotificationPermissionIfNeeded()
+
+                  val prefs = getSharedPreferences("AutomationPrefs", Context.MODE_PRIVATE)
+                  val savedState = prefs.getBoolean("is_automation_enabled", true)
+
+                  if (savedState && !ShakeAutomationService.isServiceRunning) {
+                      startAutomationService()
+                  } else {
+                      updateUI(ShakeAutomationService.isServiceRunning)
+                  }
+
+                  switchAutomation.setOnCheckedChangeListener { _, isChecked ->
+                      prefs.edit().putBoolean("is_automation_enabled", isChecked).apply()
+
+                      if (isChecked) {
+                          startAutomationService()
+                      } else {
+                          stopAutomationService()
+                      }
+                  }
+              }
+
+              private fun startAutomationService() {
+                  val serviceIntent = Intent(this, ShakeAutomationService::class.java)
+                  ContextCompat.startForegroundService(this, serviceIntent)
+                  updateUI(true)
+              }
+
+              private fun stopAutomationService() {
+                  val serviceIntent = Intent(this, ShakeAutomationService::class.java)
+                  stopService(serviceIntent)
+                  updateUI(false)
+              }
+
+              private fun updateUI(isRunning: Boolean) {
+                  switchAutomation.isChecked = isRunning
+                  tvStatus.text = if (isRunning) {
+                      "Background Service: RUNNING\n(Pocket Guard & Boot Auto-Start Active)"
+                  } else {
+                      "Background Service: STOPPED"
+                  }
+              }
+
+              private fun requestNotificationPermissionIfNeeded() {
+                  if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.TIRAMISU) {
+                      if (ContextCompat.checkSelfPermission(this, Manifest.permission.POST_NOTIFICATIONS)
+                          != PackageManager.PERMISSION_GRANTED
+                      ) {
+                          ActivityCompat.requestPermissions(
+                              this,
+                              arrayOf(Manifest.permission.POST_NOTIFICATIONS),
+                              100
+                          )
+                      }
+                  }
+              }
+          }
+          EOF
+
+          cat << 'EOF' > app/src/main/java/com/example/shakeautomation/ShakeAutomationService.kt
+          package com.example.shakeautomation
+
+          import android.annotation.SuppressLint
+          import android.app.Notification
+          import android.app.NotificationChannel
+          import android.app.NotificationManager
+          import android.app.PendingIntent
+          import android.app.Service
+          import android.content.Context
+          import android.content.Intent
+          import android.hardware.Sensor
+          import android.hardware.SensorEvent
+          import android.hardware.SensorEventListener
+          import android.hardware.SensorManager
+          import android.hardware.camera2.CameraCharacteristics
+          import android.hardware.camera2.CameraManager
+          import android.os.Build
+          import android.os.IBinder
+          import android.os.PowerManager
+          import android.os.VibrationEffect
+          import android.os.Vibrator
+          import android.os.VibratorManager
+          import androidx.core.app.NotificationCompat
+          import kotlin.math.sqrt
+
+          class ShakeAutomationService : Service(), SensorEventListener {
+
+              private lateinit var sensorManager: SensorManager
+              private var accelerometer: Sensor? = null
+              private var proximitySensor: Sensor? = null
+
+              private lateinit var cameraManager: CameraManager
+              private var cameraId: String? = null
+              private var wakeLock: PowerManager.WakeLock? = null
+
+              private var isTorchOn = false
+              private var isPocketed = false
+              private var lastShakeTime: Long = 0
+
+              companion object {
+                  const val CHANNEL_ID = "ShakeAutomationChannel"
+                  const val NOTIFICATION_ID = 101
+                  private const val SHAKE_THRESHOLD_GRAVITY = 2.7f
+                  private const val SHAKE_COOLDOWN_MS = 800
+
+                  var isServiceRunning = false
+              }
+
+              @SuppressLint("WakelockTimeout")
+              override fun onCreate() {
+                  super.onCreate()
+                  isServiceRunning = true
+
+                  val powerManager = getSystemService(Context.POWER_SERVICE) as PowerManager
+                  wakeLock = powerManager.newWakeLock(
+                      PowerManager.PARTIAL_WAKE_LOCK,
+                      "ShakeAutomation::SensorWakeLock"
+                  ).apply {
+                      acquire()
+                  }
+
+                  cameraManager = getSystemService(Context.CAMERA_SERVICE) as CameraManager
+                  cameraId = getFlashCameraId()
+                  cameraManager.registerTorchCallback(torchCallback, null)
+
+                  sensorManager = getSystemService(Context.SENSOR_SERVICE) as SensorManager
+                  accelerometer = sensorManager.getDefaultSensor(Sensor.TYPE_ACCELEROMETER)
+                  proximitySensor = sensorManager.getDefaultSensor(Sensor.TYPE_PROXIMITY)
+
+                  accelerometer?.let {
+                      sensorManager.registerListener(this, it, SensorManager.SENSOR_DELAY_NORMAL)
+                  }
+                  proximitySensor?.let {
+                      sensorManager.registerListener(this, it, SensorManager.SENSOR_DELAY_NORMAL)
+                  }
+              }
+
+              override fun onStartCommand(intent: Intent?, flags: Int, startId: Int): Int {
+                  createNotificationChannel()
+                  val notification = buildNotification("Listening for shake gesture (Pocket Guard On)...")
+                  startForeground(NOTIFICATION_ID, notification)
+                  return START_STICKY
+              }
+
+              private val torchCallback = object : CameraManager.TorchCallback() {
+                  override fun onTorchModeChanged(camId: String, enabled: Boolean) {
+                      super.onTorchModeChanged(camId, enabled)
+                      if (camId == cameraId) {
+                          isTorchOn = enabled
+                          updateNotification(
+                              if (enabled) "Torch is ON (Shake to turn off)"
+                              else "Listening for shake gesture (Pocket Guard On)..."
+                          )
+                      }
+                  }
+              }
+
+              override fun onSensorChanged(event: SensorEvent?) {
+                  if (event == null) return
+
+                  when (event.sensor.type) {
+                      Sensor.TYPE_PROXIMITY -> {
+                          val distanceInCm = event.values[0]
+                          val maxRange = event.sensor.maximumRange
+                          isPocketed = distanceInCm < maxRange && distanceInCm < 5.0f
+                      }
+
+                      Sensor.TYPE_ACCELEROMETER -> {
+                          if (isPocketed && !isTorchOn) return
+
+                          val gX = event.values[0] / SensorManager.GRAVITY_EARTH
+                          val gY = event.values[1] / SensorManager.GRAVITY_EARTH
+                          val gZ = event.values[2] / SensorManager.GRAVITY_EARTH
+
+                          val gForce = sqrt(gX * gX + gY * gY + gZ * gZ)
+
+                          if (gForce > SHAKE_THRESHOLD_GRAVITY) {
+                              val now = System.currentTimeMillis()
+                              if (now - lastShakeTime > SHAKE_COOLDOWN_MS) {
+                                  lastShakeTime = now
+                                  toggleFlashlight()
+                              }
+                          }
+                      }
+                  }
+              }
+
+              private fun toggleFlashlight() {
+                  val id = cameraId ?: return
+                  try {
+                      cameraManager.setTorchMode(id, !isTorchOn)
+                      triggerHapticFeedback()
+                  } catch (e: Exception) {
+                      e.printStackTrace()
+                  }
+              }
+
+              private fun triggerHapticFeedback() {
+                  val vibrator = if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.S) {
+                      val vibratorManager = getSystemService(Context.VIBRATOR_MANAGER_SERVICE) as VibratorManager
+                      vibratorManager.defaultVibrator
+                  } else {
+                      @Suppress("DEPRECATION")
+                      getSystemService(Context.VIBRATOR_SERVICE) as Vibrator
+                  }
+
+                  if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.O) {
+                      vibrator.vibrate(VibrationEffect.createOneShot(70, VibrationEffect.DEFAULT_AMPLITUDE))
+                  } else {
+                      @Suppress("DEPRECATION")
+                      vibrator.vibrate(70)
+                  }
+              }
+
+              private fun getFlashCameraId(): String? {
+                  for (id in cameraManager.cameraIdList) {
+                      val characteristics = cameraManager.getCameraCharacteristics(id)
+                      if (characteristics.get(CameraCharacteristics.FLASH_INFO_AVAILABLE) == true) {
+                          return id
+                      }
+                  }
+                  return null
+              }
+
+              private fun createNotificationChannel() {
+                  if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.O) {
+                      val channel = NotificationChannel(
+                          CHANNEL_ID,
+                          "Shake Automation Service",
+                          NotificationManager.IMPORTANCE_LOW
+                      )
+                      val manager = getSystemService(NotificationManager::class.java)
+                      manager.createNotificationChannel(channel)
+                  }
+              }
+
+              private fun buildNotification(contentText: String): Notification {
+                  val notificationIntent = Intent(this, MainActivity::class.java)
+                  val pendingIntent = PendingIntent.getActivity(
+                      this, 0, notificationIntent,
+                      PendingIntent.FLAG_IMMUTABLE or PendingIntent.FLAG_UPDATE_CURRENT
+                  )
+
+                  return NotificationCompat.Builder(this, CHANNEL_ID)
+                      .setContentTitle("Shake-to-Torch Active")
+                      .setContentText(contentText)
+                      .setSmallIcon(android.R.drawable.ic_lock_idle_charging)
+                      .setContentIntent(pendingIntent)
+                      .setOngoing(true)
+                      .build()
+              }
+
+              private fun updateNotification(contentText: String) {
+                  val manager = getSystemService(Context.NOTIFICATION_SERVICE) as NotificationManager
+                  manager.notify(NOTIFICATION_ID, buildNotification(contentText))
+              }
+
+              override fun onDestroy() {
+                  super.onDestroy()
+                  isServiceRunning = false
+                  sensorManager.unregisterListener(this)
+                  cameraManager.unregisterTorchCallback(torchCallback)
+                  wakeLock?.let {
+                      if (it.isHeld) it.release()
+                  }
+              }
+
+              override fun onAccuracyChanged(sensor: Sensor?, accuracy: Int) {}
+
+              override fun onBind(intent: Intent?): IBinder? = null
+          }
+          EOF
+
+          cat << 'EOF' > app/src/main/java/com/example/shakeautomation/BootReceiver.kt
+          package com.example.shakeautomation
+
+          import android.content.BroadcastReceiver
+          import android.content.Context
+          import android.content.Intent
+          import androidx.core.content.ContextCompat
+
+          class BootReceiver : BroadcastReceiver() {
+
+              override fun onReceive(context: Context, intent: Intent) {
+                  if (intent.action == Intent.ACTION_BOOT_COMPLETED ||
+                      intent.action == "android.intent.action.QUICKBOOT_POWERON"
+                  ) {
+                      val prefs = context.getSharedPreferences("AutomationPrefs", Context.MODE_PRIVATE)
+                      val isEnabled = prefs.getBoolean("is_automation_enabled", true)
+
+                      if (isEnabled) {
+                          val serviceIntent = Intent(context, ShakeAutomationService::class.java)
+                          ContextCompat.startForegroundService(context, serviceIntent)
+                      }
+                  }
+              }
+          }
+          EOF
+
+      - name: Set up JDK 17
+        uses: actions/setup-java@v4
+        with:
+          java-version: '17'
+          distribution: 'temurin'
+
+      - name: Setup Gradle 8.7
+        uses: gradle/actions/setup-gradle@v3
+        with:
+          gradle-version: '8.7'
+
+      - name: Compile Debug APK
+        run: gradle assembleDebug --stacktrace
+
+      - name: Upload Compiled APK Artifact
+        uses: actions/upload-artifact@v4
+        with:
+          name: ShakeAutomation-APK
+          path: app/build/outputs/apk/debug/app-debug.apk
